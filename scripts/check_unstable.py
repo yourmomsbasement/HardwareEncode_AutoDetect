@@ -57,7 +57,8 @@ def main():
     plugin_id = manifest["guid"]
     expected_version = manifest["versions"][0]["version"]
     plugins = request("/Plugins")
-    installed = next(plugin for plugin in plugins if uuid.UUID(plugin["Id"]) == uuid.UUID(plugin_id))
+    installed = next((plugin for plugin in plugins if uuid.UUID(plugin["Id"]) == uuid.UUID(plugin_id)), None)
+    assert installed is not None, f"Plugin missing from loaded plugins: {[(p['Name'], p['Id']) for p in plugins]}"
     assert installed["Version"] == expected_version, installed
     assert installed["Status"] == "Active", installed
     assert "HasBackup" in request("/HardwareAutoDetect/Status")
@@ -76,7 +77,8 @@ def main():
             url = f"http://127.0.0.1:{catalog.server_port}/{args.manifest.name}"
             request("/Repositories", [{"Name": "HWAD test", "Url": url, "Enabled": True}])
             packages = request("/Packages")
-            available = next(package for package in packages if uuid.UUID(package["guid"]) == uuid.UUID(plugin_id))
+            available = next((package for package in packages if uuid.UUID(package["guid"]) == uuid.UUID(plugin_id)), None)
+            assert available is not None, f"Plugin missing from catalog on Jellyfin {info['Version']}: {packages}"
             assert any(v["version"] == expected_version for v in available["versions"]), available
         finally:
             catalog.shutdown()
