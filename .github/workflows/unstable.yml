@@ -59,7 +59,13 @@ jobs:
             --logdir "$data/log" --ffmpeg /usr/bin/ffmpeg > "$RUNNER_TEMP/unstable.log" 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid" 2>/dev/null || true' EXIT
-          if ! python scripts/check_unstable.py --manifest artifacts/repository/manifest.json; then
+          if ! python scripts/check_unstable.py --manifest artifacts/repository/manifest.json 2> "$RUNNER_TEMP/smoke-error.log"; then
+            detail=$(tail -1 "$RUNNER_TEMP/smoke-error.log")
+            printf '::error title=Unstable smoke test::%s\n' "$detail"
+            cat "$RUNNER_TEMP/smoke-error.log"
+            grep -E '\[(ERR|FTL)\]' "$RUNNER_TEMP/unstable.log" | tail -5 | while IFS= read -r line; do
+              printf '::error title=Unstable server::%s\n' "$line"
+            done || true
             tail -100 "$RUNNER_TEMP/unstable.log"
             exit 1
           fi
