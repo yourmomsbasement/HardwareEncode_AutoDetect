@@ -60,6 +60,53 @@ Copy `out/Jellyfin.Plugin.HardwareAutoDetect.dll` into a new folder under your J
 for example `/var/lib/jellyfin/plugins/HardwareAutoDetect_1.0.0.0/` or `/config/plugins/...` in Docker. Then restart Jellyfin.
 You can also package it with [jprm](https://github.com/oddstr13/jellyfin-plugin-repository-manager) using `build.yaml`.
 
+## Jellyfin plugin repository
+
+After the first release has been published, add this repository in **Dashboard →
+Plugins → Repositories**:
+
+- Name: `Hardware Auto-Detect`
+- URL: `https://github.com/yourmomsbasement/HardwareEncode_AutoDetect/releases/latest/download/manifest.json`
+
+The plugin then appears in the catalog for compatible Jellyfin **12.x** servers.
+It does not support Jellyfin 10.11 without the code and dependency changes described
+above. This is a third-party repository; publishing it does not add the plugin to
+Jellyfin's official repository.
+
+### Publishing a release
+
+The **Release Jellyfin repository** GitHub Actions workflow builds and tests the
+plugin, publishes a ZIP containing its DLL, and attaches `manifest.json` to a
+GitHub release. The manifest includes the plugin GUID, target ABI, version,
+download URL, ZIP MD5 checksum, and earlier released versions. GitHub Actions
+must be enabled and allowed to write repository contents.
+
+1. Set the same new four-part version in `Directory.Build.props` and `build.yaml`.
+   Update the changelog in `build.yaml` and commit to `main`.
+2. Push the matching tag, for example:
+
+   ```bash
+   git tag v1.0.0.0
+   git push origin v1.0.0.0
+   ```
+
+   Alternatively, run **Release Jellyfin repository** manually on `main` in the
+   Actions tab. Existing versions are immutable; increment the version for later
+   releases.
+3. Confirm that the workflow succeeded and the release contains both the ZIP and
+   `manifest.json` before adding the URL in Jellyfin.
+
+To verify packaging locally after publishing the DLL:
+
+```bash
+python3 -m pip install PyYAML==6.0.3
+python3 scripts/package_plugin.py
+```
+
+Generated files are under the ignored `artifacts/repository/` directory. The
+catalog is generated from `build.yaml` and the exact ZIP being uploaded, so its
+checksum always corresponds to the release asset. Do not hand-edit checksums.
+
 ## API
 
 All endpoints require an administrator.

@@ -1,0 +1,72 @@
+name: Release Jellyfin repository
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: plugin-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install packaging and integration-test prerequisites
+        run: |
+          python -m pip install PyYAML==6.0.3
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Validate release version
+        id: version
+        shell: bash
+        run: |
+          version=$(python -c 'import yaml; print(yaml.safe_load(open("build.yaml"))["version"])')
+          tag="v$version"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "Tag must match build.yaml version ($tag)" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Build, test, and publish
+        env:
+          HWAD_FFMPEG: /usr/bin/ffmpeg
+        run: |
+          dotnet build -c Release
+          dotnet test -c Release --no-build
+          dotnet publish src/Jellyfin.Plugin.HardwareAutoDetect -c Release --no-restore -o artifacts/plugin
+      - name: Preserve previous catalog versions and package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/previous
+          gh api "repos/$GITHUB_REPOSITORY/releases" > artifacts/previous/releases.json
+          count=$(python -c 'import json; print(len(json.load(open("artifacts/previous/releases.json"))))')
+          if [[ "$count" != 0 ]]; then
+            gh release download --repo "$GITHUB_REPOSITORY" --pattern manifest.json --dir artifacts/previous
+            python scripts/package_plugin.py --repository "$GITHUB_REPOSITORY" --previous-manifest artifacts/previous/manifest.json
+          else
+            python scripts/package_plugin.py --repository "$GITHUB_REPOSITORY"
+          fi
+      - name: Publish installable plugin and catalog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$RELEASE_TAG" artifacts/repository/*.zip artifacts/repository/manifest.json \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
+            --title "Hardware Auto-Detect $RELEASE_TAG" --generate-notes
