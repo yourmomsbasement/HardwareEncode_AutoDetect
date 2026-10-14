@@ -52,8 +52,10 @@ jobs:
         run: |
           set -euo pipefail
           data="$RUNNER_TEMP/unstable-data"
-          mkdir -p "$data/plugins/HardwareAutoDetect"
-          cp artifacts/plugin/Jellyfin.Plugin.HardwareAutoDetect.dll "$data/plugins/HardwareAutoDetect/"
+          version=$(python -c 'import yaml; print(yaml.safe_load(open("build.yaml"))["version"])')
+          plugin_dir="$data/plugins/HardwareAutoDetect_$version"
+          mkdir -p "$plugin_dir"
+          cp artifacts/plugin/Jellyfin.Plugin.HardwareAutoDetect.dll "$plugin_dir/"
           dotnet "$RUNNER_TEMP/unstable-server/jellyfin.dll" --nowebclient \
             --datadir "$data" --configdir "$data/config" --cachedir "$data/cache" \
             --logdir "$data/log" --ffmpeg /usr/bin/ffmpeg > "$RUNNER_TEMP/unstable.log" 2>&1 &
