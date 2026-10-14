@@ -1,0 +1,32 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install ffmpeg (for the real-ffmpeg integration test)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Build
+        run: dotnet build -c Release
+
+      - name: Test
+        run: dotnet test -c Release --no-build
+
+      - name: Publish plugin
+        run: dotnet publish src/Jellyfin.Plugin.HardwareAutoDetect -c Release -o artifacts/plugin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Jellyfin.Plugin.HardwareAutoDetect
+          path: artifacts/plugin/Jellyfin.Plugin.HardwareAutoDetect.dll

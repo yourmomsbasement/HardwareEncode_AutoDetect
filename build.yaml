@@ -1,0 +1,19 @@
+---
+name: "Hardware Acceleration Auto-Detect"
+guid: "5b8c1f3e-7a42-4d6b-9c1e-2f8a6d4b3e91"
+version: "1.0.0.0"
+targetAbi: "12.0.0.0"
+framework: "net10.0"
+overview: "Detects your GPU and configures hardware transcoding automatically"
+description: >
+  Probes every GPU / media engine on the server with short real ffmpeg jobs
+  (NVENC/NVDEC, Intel QSV, VA-API, AMD AMF, Apple VideoToolbox, Rockchip MPP)
+  and writes the working hardware acceleration type, device, hardware decoding
+  codecs, 10/12-bit and HEVC RExt decoding, HEVC/AV1 encoding, Intel low-power
+  encoders and tone mapping into Jellyfin's transcoding settings.
+category: "General"
+owner: "yourmomsbasement"
+artifacts:
+  - "Jellyfin.Plugin.HardwareAutoDetect.dll"
+changelog: >
+  Initial release.

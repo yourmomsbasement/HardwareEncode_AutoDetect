@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Hardware Acceleration Auto-Detect</title>
+</head>
+<body>
+    <div id="HwAutoDetectPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox">
+        <div data-role="content">
+            <div class="content-primary">
+                <h2 class="sectionTitle">Hardware Acceleration Auto-Detect</h2>
+                <p>Runs short ffmpeg test jobs on every GPU it finds, then sets <b>Dashboard → Playback → Transcoding</b> to the accelerator, decoders, encoders and tone mapping that actually work.</p>
+
+                <div style="display:flex;flex-wrap:wrap;gap:.5em;margin:1em 0 2em;">
+                    <button is="emby-button" type="button" id="hwadDetect" class="raised emby-button"><span>Detect (preview only)</span></button>
+                    <button is="emby-button" type="button" id="hwadApply" class="raised button-submit emby-button"><span>Detect &amp; apply</span></button>
+                    <button is="emby-button" type="button" id="hwadRestore" class="raised emby-button" style="display:none"><span>Restore original settings</span></button>
+                </div>
+
+                <div id="hwadReport"></div>
+
+                <form id="HwAutoDetectForm">
+                    <h3 class="sectionTitle">Settings</h3>
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="ApplyMode">Run automatically</label>
+                        <select is="emby-select" id="ApplyMode" class="emby-select-withcolor emby-select">
+                            <option value="OnHardwareChange">At startup, when the GPU or ffmpeg changed</option>
+                            <option value="EveryStartup">At every startup</option>
+                            <option value="Manual">Never (manual only)</option>
+                        </select>
+                    </div>
+                    <div class="selectContainer">
+                        <label class="selectLabel" for="PreferredAccelerator">Preferred accelerator</label>
+                        <select is="emby-select" id="PreferredAccelerator" class="emby-select-withcolor emby-select">
+                            <option value="auto">Automatic (best scoring)</option>
+                            <option value="nvenc">NVIDIA NVENC</option>
+                            <option value="qsv">Intel QuickSync (QSV)</option>
+                            <option value="vaapi">VA-API</option>
+                            <option value="amf">AMD AMF</option>
+                            <option value="videotoolbox">Apple VideoToolbox</option>
+                            <option value="rkmpp">Rockchip MPP</option>
+                        </select>
+                        <div class="fieldDescription">Used when it passes the tests; otherwise the best working accelerator is chosen.</div>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label"><input id="AllowHevcEncoding" type="checkbox" is="emby-checkbox" /><span>Allow HEVC encoding when supported</span></label>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label"><input id="AllowAv1Encoding" type="checkbox" is="emby-checkbox" /><span>Allow AV1 encoding when supported</span></label>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label"><input id="EnableTonemapping" type="checkbox" is="emby-checkbox" /><span>Enable hardware tone mapping when supported</span></label>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label"><input id="InferVc1" type="checkbox" is="emby-checkbox" /><span>Enable VC-1 decoding on Intel/NVIDIA when MPEG-2 works</span></label>
+                        <div class="fieldDescription checkboxFieldDescription">ffmpeg cannot create a VC-1 test clip, so VC-1 is inferred instead of tested.</div>
+                    </div>
+                    <div class="checkboxContainer checkboxContainer-withDescription">
+                        <label class="emby-checkbox-label"><input id="DisableWhenNoneFound" type="checkbox" is="emby-checkbox" /><span>Turn hardware acceleration off when nothing works</span></label>
+                    </div>
+                    <div class="inputContainer">
+                        <label class="inputLabel inputLabelUnfocused" for="ProbeTimeoutSeconds">Per-test timeout (seconds)</label>
+                        <input id="ProbeTimeoutSeconds" type="number" is="emby-input" min="5" max="300" />
+                    </div>
+                    <button is="emby-button" type="submit" class="raised button-submit block emby-button"><span>Save</span></button>
+                </form>
+            </div>
+        </div>
+        <style>
+            #hwadReport table { border-collapse: collapse; width: 100%; margin: .5em 0 1.5em; }
+            #hwadReport th, #hwadReport td { text-align: left; padding: .3em .6em; border-bottom: 1px solid rgba(128,128,128,.3); vertical-align: top; }
+            #hwadReport .ok { color: #4caf50; } #hwadReport .bad { color: #e57373; } #hwadReport .skip { opacity: .6; }
+            #hwadReport details { margin: .5em 0; }
+        </style>
+        <script type="text/javascript">
+            (function () {
+                var pluginId = '5b8c1f3e-7a42-4d6b-9c1e-2f8a6d4b3e91';
+                var page = document.querySelector('#HwAutoDetectPage');
+                var bools = ['AllowHevcEncoding', 'AllowAv1Encoding', 'EnableTonemapping', 'InferVc1', 'DisableWhenNoneFound'];
+
+                function esc(s) {
+                    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+                        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+                    });
+                }
+
+                function status(p) {
+                    var cls = p.Status === 'Passed' ? 'ok' : (p.Status === 'Inferred' ? 'ok' : (p.Status === 'Skipped' ? 'skip' : 'bad'));
+                    var mark = p.Status === 'Passed' ? '✔' : (p.Status === 'Inferred' ? '✔ (inferred)' : (p.Status === 'Skipped' ? '–' : '✘'));
+                    return '<tr><td>' + esc(p.Feature) + '</td><td class="' + cls + '">' + mark + '</td><td>' + esc(p.Detail) + '</td></tr>';
+                }
+
+                function rows(title, list) {
+                    if (!list || !list.length) return '';
+                    return '<tr><th colspan="3">' + title + '</th></tr>' + list.map(status).join('');
+                }
+
+                function render(r) {
+                    var el = page.querySelector('#hwadReport');
+                    if (!r) { el.innerHTML = '<p>Detection has not run yet.</p>'; return; }
+                    var html = '<h3 class="sectionTitle">Last result (' + esc(new Date(r.FinishedUtc).toLocaleString()) + ')</h3>';
+                    html += '<p><b>Selected:</b> ' + (r.Selected ? esc(r.Selected) : 'none') + (r.Applied ? ' — <b>applied</b>' : ' — preview only') + '</p>';
+                    if (r.Changes && r.Changes.length) {
+                        html += '<p><b>' + (r.Applied ? 'Changed' : 'Would change') + ':</b></p><ul>' + r.Changes.map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('') + '</ul>';
+                    } else if (r.Selected) {
+                        html += '<p>Settings already match.</p>';
+                    }
+                    (r.Messages || []).forEach(function (m) { html += '<p class="fieldDescription">' + esc(m) + '</p>'; });
+                    html += '<p class="fieldDescription">Devices: ' + ((r.Devices || []).map(function (d) { return esc(d.Name + (d.DevicePath ? ' @ ' + d.DevicePath : '')); }).join('; ') || 'none found') + '<br/>ffmpeg: ' + esc(r.FfmpegPath) + '</p>';
+                    (r.Accelerators || []).forEach(function (a) {
+                        html += '<details' + (a.Name === r.Selected ? ' open' : '') + '><summary><b>' + esc(a.Name) + '</b> — ' + (a.IsUsable ? 'score ' + a.Score : 'not usable') + '</summary><table>'
+                            + rows('Encode', a.Encode) + rows('Decode', a.Decode) + rows('Tone mapping', a.Tonemap) + '</table></details>';
+                    });
+                    el.innerHTML = html;
+                }
+
+                function refreshStatus() {
+                    ApiClient.ajax({ type: 'GET', url: ApiClient.getUrl('HardwareAutoDetect/Status'), dataType: 'json' }).then(function (s) {
+                        page.querySelector('#hwadRestore').style.display = s && s.HasBackup ? '' : 'none';
+                    });
+                }
+
+                function run(apply) {
+                    if (apply && !confirm('Probe the hardware and overwrite the transcoding settings with the result?')) return;
+                    Dashboard.showLoadingMsg();
+                    ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('HardwareAutoDetect/Run', { apply: apply }), dataType: 'json' })
+                        .then(function (r) { render(r); refreshStatus(); })
+                        .catch(function () { Dashboard.alert('Hardware detection failed. Check the server log.'); })
+                        .finally(function () { Dashboard.hideLoadingMsg(); });
+                }
+
+                page.querySelector('#hwadDetect').addEventListener('click', function () { run(false); });
+                page.querySelector('#hwadApply').addEventListener('click', function () { run(true); });
+                page.querySelector('#hwadRestore').addEventListener('click', function () {
+                    if (!confirm('Restore the transcoding settings from before this plugin changed them?')) return;
+                    ApiClient.ajax({ type: 'POST', url: ApiClient.getUrl('HardwareAutoDetect/Restore'), dataType: 'json' }).then(function (changes) {
+                        Dashboard.alert(changes && changes.length ? 'Restored: ' + changes.join(', ') : 'Settings already matched the backup.');
+                        refreshStatus();
+                    });
+                });
+
+                page.addEventListener('pageshow', function () {
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                        page.querySelector('#ApplyMode').value = config.ApplyMode;
+                        page.querySelector('#PreferredAccelerator').value = config.PreferredAccelerator || 'auto';
+                        page.querySelector('#ProbeTimeoutSeconds').value = config.ProbeTimeoutSeconds;
+                        bools.forEach(function (b) { page.querySelector('#' + b).checked = !!config[b]; });
+                        Dashboard.hideLoadingMsg();
+                    });
+                    ApiClient.ajax({ type: 'GET', url: ApiClient.getUrl('HardwareAutoDetect/Report'), dataType: 'json' })
+                        .then(render, function () { render(null); });
+                    refreshStatus();
+                });
+
+                page.querySelector('#HwAutoDetectForm').addEventListener('submit', function (e) {
+                    e.preventDefault();
+                    Dashboard.showLoadingMsg();
+                    ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+                        config.ApplyMode = page.querySelector('#ApplyMode').value;
+                        config.PreferredAccelerator = page.querySelector('#PreferredAccelerator').value;
+                        config.ProbeTimeoutSeconds = parseInt(page.querySelector('#ProbeTimeoutSeconds').value, 10) || 30;
+                        bools.forEach(function (b) { config[b] = page.querySelector('#' + b).checked; });
+                        ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
+                            Dashboard.processPluginConfigurationUpdateResult(result);
+                        });
+                    });
+                    return false;
+                });
+            })();
+        </script>
+    </div>
+</body>
+</html>
