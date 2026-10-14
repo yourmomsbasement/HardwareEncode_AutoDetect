@@ -4,8 +4,10 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Xml.Serialization;
 using Jellyfin.Plugin.HardwareAutoDetect.Configuration;
 using Jellyfin.Plugin.HardwareAutoDetect.Detection;
+using MediaBrowser.Model.Configuration;
 using MediaBrowser.Model.Entities;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -161,6 +163,27 @@ public class EncodingSettingsMapperTests
     private static readonly GpuDevice _intel = new(GpuVendor.Intel, "Intel", "/dev/dri/renderD129", "i915");
 
     [Fact]
+    public void SuccessfulDecoders_PersistThroughEncodingXmlRoundTrip()
+    {
+        var best = CandidatePlannerTests.Result(HardwareAccelerationType.qsv,
+            encode: [EncodeFeature.H264], decode: [DecodeFeature.H264, DecodeFeature.Hevc, DecodeFeature.Hevc10], device: _intel);
+        var encoding = new EncodingOptions { HardwareDecodingCodecs = ["vc1"], EncoderPreset = EncoderPreset.slow };
+        var desired = EncodingSettingsMapper.Map(ManagedEncodingSettings.From(encoding), best, new PluginConfiguration(), true)!;
+        desired.ApplyTo(encoding);
+
+        var serializer = new XmlSerializer(typeof(EncodingOptions));
+        using var stream = new MemoryStream();
+        serializer.Serialize(stream, encoding);
+        stream.Position = 0;
+        var reloaded = (EncodingOptions)serializer.Deserialize(stream)!;
+        Assert.Equal(["h264", "hevc"], reloaded.HardwareDecodingCodecs);
+        Assert.True(reloaded.EnableDecodingColorDepth10Hevc);
+        Assert.Equal(HardwareAccelerationType.qsv, reloaded.HardwareAccelerationType);
+        Assert.Equal(EncoderPreset.slow, reloaded.EncoderPreset);
+        Assert.Empty(ManagedEncodingSettings.Diff(desired, ManagedEncodingSettings.From(reloaded)));
+    }
+
+    [Fact]
     public void Qsv_MapsEveryCapability()
     {
         var best = CandidatePlannerTests.Result(
@@ -255,6 +278,8 @@ internal sealed class FakeFfmpeg : IProcessRunner
     /// <summary>Gets sample file names (without extension) that decode in hardware.</summary>
     public HashSet<string> WorkingSamples { get; } = [];
 
+    public Dictionary<string, string> RequiredDownloadFormats { get; } = [];
+
     public HashSet<string> WorkingFilters { get; } = [];
 
     public bool DeviceWorks { get; set; } = true;
@@ -289,7 +314,14 @@ internal sealed class FakeFfmpeg : IProcessRunner
 
         if (input.EndsWith(".mkv", StringComparison.Ordinal))
         {
-            var ok = WorkingSamples.Contains(Path.GetFileNameWithoutExtension(input));
+            var sample = Path.GetFileNameWithoutExtension(input);
+            if (RequiredDownloadFormats.TryGetValue(sample, out var format)
+                && Value(args, "-vf") != "hwdownload,format=" + format)
+            {
+                return Done(false, "libva info: VA-API version 1.24.0\n[hwdownload] Invalid output format for hwframe download.");
+            }
+
+            var ok = WorkingSamples.Contains(sample);
             return Done(ok, ok ? string.Empty : "Failed setup for format vaapi: hwaccel initialisation returned error.");
         }
 
@@ -331,6 +363,54 @@ public sealed class HardwareProberTests : IDisposable
         var prober = new HardwareProber(ffmpeg, NullLogger.Instance, "ffmpeg", TimeSpan.FromSeconds(5), isWindows: false);
         return await prober.ProbeAsync(candidate, samples, inferVc1, CancellationToken.None);
     }
+
+    [Fact]
+    public async Task DecodeDownload_UsesMatchingEightAndTenBitSurfaceFormats()
+    {
+        var ffmpeg = new FakeFfmpeg();
+        ffmpeg.WorkingEncoders.Add("h264_qsv");
+        foreach (var sample in new[] { "h264_yuv420p", "hevc_yuv420p", "mpeg2video_yuv420p", "vp9_yuv420p" })
+        {
+            ffmpeg.WorkingSamples.Add(sample);
+            ffmpeg.RequiredDownloadFormats[sample] = "nv12";
+        }
+
+        foreach (var sample in new[] { "hevc_yuv420p10le", "vp9_yuv420p10le" })
+        {
+            ffmpeg.WorkingSamples.Add(sample);
+            ffmpeg.RequiredDownloadFormats[sample] = "p010le";
+        }
+
+        var r = await Probe(ffmpeg, new AcceleratorCandidate(HardwareAccelerationType.qsv,
+            new GpuDevice(GpuVendor.Intel, "Intel", "/dev/dri/renderD128", "i915")));
+        Assert.All(new[] { DecodeFeature.H264, DecodeFeature.Hevc, DecodeFeature.Hevc10,
+            DecodeFeature.Mpeg2, DecodeFeature.Vp9, DecodeFeature.Vp9_10, DecodeFeature.Vc1 },
+            feature => Assert.True(r.CanDecode(feature), feature));
+    }
+
+    [Fact]
+    public async Task DecodeDownload_RetriesPlanarSurfaceOnlyAfterFormatMismatch()
+    {
+        var ffmpeg = new FakeFfmpeg();
+        ffmpeg.WorkingSamples.Add("h264_yuv420p");
+        ffmpeg.RequiredDownloadFormats["h264_yuv420p"] = "yuv420p";
+        var r = await Probe(ffmpeg, new AcceleratorCandidate(HardwareAccelerationType.nvenc, null));
+        Assert.True(r.CanDecode(DecodeFeature.H264));
+        var calls = ffmpeg.Calls.Where(c => c.Contains("-hwaccel")
+            && c.Any(a => a.EndsWith("h264_yuv420p.mkv", StringComparison.Ordinal))).ToList();
+        Assert.Equal(2, calls.Count);
+        Assert.Contains("hwdownload,format=nv12", calls[0]);
+        Assert.Contains("hwdownload,format=yuv420p", calls[1]);
+        // An actual unsupported decoder must not trigger a format retry.
+        Assert.Single(ffmpeg.Calls, c => c.Contains("-hwaccel")
+            && c.Any(a => a.EndsWith("hevc_yuv420p.mkv", StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("libva info: VA-API version 1.24.0\n[hwdownload] Invalid output format monow", "[hwdownload] Invalid output format monow")]
+    [InlineData("libva info: Trying to open iHD\nlibva error: Driver init failed", "libva error: Driver init failed")]
+    public void ProbeError_SkipsLibvaInformationalLines(string output, string expected)
+        => Assert.Equal(expected, SampleLibrary.FirstLine(output));
 
     [Fact]
     public async Task IntelQsv_ReportsExactlyWhatWorks()

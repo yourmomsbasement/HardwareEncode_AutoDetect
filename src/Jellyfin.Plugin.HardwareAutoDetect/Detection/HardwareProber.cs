@@ -159,11 +159,21 @@ public sealed class HardwareProber
                     args.AddRange(["-c:v", "av1"]);
                 }
 
-                // hwdownload only accepts hardware frames, so a silent software fallback fails the job.
-                args.AddRange(["-i", file, "-vf", "hwdownload", "-f", "null", "-"]);
-                var r = await RunAsync(args, cancellationToken).ConfigureAwait(false);
-                outcome = ToProbe(feature, r, System.IO.Path.GetFileNameWithoutExtension(file));
-                if (!outcome.IsSupported)
+                // hwdownload only accepts hardware frames, so a silent software fallback fails.
+                // Its output must match the surface's software format. Without an explicit
+                // format, the null sink can negotiate monow and reject a working decoder.
+                foreach (var format in DownloadFormats(file))
+                {
+                    var r = await RunAsync(
+                        [.. args, "-i", file, "-vf", $"hwdownload,format={format}", "-f", "null", "-"],
+                        cancellationToken).ConfigureAwait(false);
+                    outcome = ToProbe(feature, r, System.IO.Path.GetFileNameWithoutExtension(file));
+                    if (outcome.IsSupported || r.TimedOut || !IsDownloadFormatMismatch(r.Output))
+                    {
+                        break;
+                    }
+                }
+                if (!outcome!.IsSupported)
                 {
                     break;
                 }
@@ -172,6 +182,29 @@ public sealed class HardwareProber
             result.Decode.Add(outcome!);
         }
     }
+
+    private static IReadOnlyList<string> DownloadFormats(string file)
+    {
+        var name = System.IO.Path.GetFileNameWithoutExtension(file);
+        var pixelFormat = name[(name.LastIndexOf('_') + 1)..];
+        // VA-API/D3D11 use packed or semi-planar surfaces; CUDA can expose planar
+        // surfaces instead. Retry only format negotiation, never a failed decoder.
+        return pixelFormat switch
+        {
+            "yuv420p" => ["nv12", "yuv420p"],
+            "yuv420p10le" => ["p010le", "yuv420p10le"],
+            "yuv422p10le" => ["y210le", "p210le", "yuv422p10le"],
+            "yuv444p10le" => ["yuv444p16le", "xv30le", "yuv444p10le"],
+            "yuv420p12le" => ["p012le", "p016le", "yuv420p12le"],
+            "yuv422p12le" => ["y212le", "p212le", "yuv422p12le"],
+            "yuv444p12le" => ["yuv444p16le", "xv36le", "yuv444p12le"],
+            _ => [pixelFormat],
+        };
+    }
+
+    private static bool IsDownloadFormatMismatch(string output)
+        => output.Contains("Invalid output format", StringComparison.OrdinalIgnoreCase)
+            || output.Contains("Invalid pixel format", StringComparison.OrdinalIgnoreCase);
 
     private static List<string> EncodeArgs(AcceleratorRecipe recipe, string encoder, bool lowPower)
     {

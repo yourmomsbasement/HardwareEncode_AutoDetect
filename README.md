@@ -138,6 +138,13 @@ All endpoints require an administrator.
 
 ## Known limitations
 
+If version 1.0.1.0 or earlier enabled encoding but cleared all decoding codecs,
+upgrade to **1.0.2.0**, restart Jellyfin, and run **Detect & apply** again. Earlier
+decode probes let FFmpeg negotiate an invalid `hwdownload` output format, which
+could mark working decoders as failed. The corrected probes request matching
+surface formats and continue to reject software fallback. If a decoder still
+fails, its report now skips libva informational lines to show the actual error.
+
 - **VC-1** can't be tested because ffmpeg has no VC-1 encoder to make a sample. On Intel and NVIDIA it's enabled when MPEG-2 decoding works (you can turn this off). On other vendors it's left off.
 - On macOS, VideoToolbox has a built-in software fallback, so its decode results are less strict than on other platforms.
 - V4L2 (Raspberry Pi) is not probed. Jellyfin has deprecated it.

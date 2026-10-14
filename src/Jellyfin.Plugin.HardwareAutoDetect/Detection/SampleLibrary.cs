@@ -133,10 +133,18 @@ public sealed class SampleLibrary
 
     internal static string FirstLine(string text)
     {
-        var trimmed = text.Trim();
-        var idx = trimmed.IndexOf('\n', StringComparison.Ordinal);
-        var line = idx < 0 ? trimmed : trimmed[..idx];
-        return line.Length > 300 ? line[..300] : line;
+        foreach (var entry in text.Split('\n'))
+        {
+            var line = entry.Trim();
+            if (line.Length == 0 || line.StartsWith("libva info:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return line.Length > 300 ? line[..300] : line;
+        }
+
+        return string.Empty;
     }
 
     private static void TryDelete(string path)
