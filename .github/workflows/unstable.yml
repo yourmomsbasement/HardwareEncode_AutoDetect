@@ -1,0 +1,65 @@
+name: Jellyfin unstable compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 12 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unstable-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: jellyfin/jellyfin
+          ref: master
+          path: artifacts/unstable-source
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install prerequisites
+        run: |
+          python -m pip install PyYAML==6.0.3
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+      - name: Build plugin and catalog
+        run: |
+          dotnet publish src/Jellyfin.Plugin.HardwareAutoDetect -c Release -o artifacts/plugin
+          python scripts/package_plugin.py --repository "$GITHUB_REPOSITORY"
+      - name: Build current Jellyfin unstable
+        working-directory: artifacts/unstable-source
+        run: |
+          git rev-parse HEAD
+          dotnet publish Jellyfin.Server -c Release -m:2 -o "$RUNNER_TEMP/unstable-server"
+      - name: Check loading, plugin API, and catalog availability
+        shell: bash
+        run: |
+          set -euo pipefail
+          data="$RUNNER_TEMP/unstable-data"
+          mkdir -p "$data/plugins/HardwareAutoDetect"
+          cp artifacts/plugin/Jellyfin.Plugin.HardwareAutoDetect.dll "$data/plugins/HardwareAutoDetect/"
+          dotnet "$RUNNER_TEMP/unstable-server/jellyfin.dll" --nowebclient \
+            --datadir "$data" --configdir "$data/config" --cachedir "$data/cache" \
+            --logdir "$data/log" --ffmpeg /usr/bin/ffmpeg > "$RUNNER_TEMP/unstable.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          if ! python scripts/check_unstable.py --manifest artifacts/repository/manifest.json; then
+            tail -100 "$RUNNER_TEMP/unstable.log"
+            exit 1
+          fi

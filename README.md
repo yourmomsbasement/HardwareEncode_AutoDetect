@@ -44,7 +44,7 @@ Before the first change, the plugin backs up the original values of every settin
 
 ## Requirements
 
-- Jellyfin **12.x** (.NET 10). To build for 10.11, change `TargetFramework` to `net9.0` and the `Jellyfin.*` package versions to `10.11.*` in the `.csproj` and `build.yaml`.
+- Jellyfin **12.2 or newer** (.NET 10), including **13.0 unstable**. To build for 10.11, change `TargetFramework` to `net9.0` and the `Jellyfin.*` package versions to `10.11.*` in the `.csproj` and `build.yaml`.
 - Use **jellyfin-ffmpeg**, which ships with the official packages and Docker image. Upstream ffmpeg lacks `tonemap_cuda`/`tonemap_opencl` and some of the other filters Jellyfin depends on, so those features will (correctly) test as unsupported.
 - The GPU drivers / container device passthrough have to be set up already. The plugin detects what's usable; it doesn't install drivers.
 
@@ -68,7 +68,10 @@ Plugins → Repositories**:
 - Name: `Hardware Auto-Detect`
 - URL: `https://github.com/yourmomsbasement/HardwareEncode_AutoDetect/releases/latest/download/manifest.json`
 
-The plugin then appears in the catalog for compatible Jellyfin **12.x** servers.
+The plugin then appears in the catalog for compatible Jellyfin **12.2+** servers,
+including **13.0 unstable**. Jellyfin filters catalog entries by the numeric server
+version, not by a stable/unstable channel flag; the minimum ABI is `12.2.0.0`,
+matching the Jellyfin packages used to compile the plugin.
 It does not support Jellyfin 10.11 without the code and dependency changes described
 above. This is a third-party repository; publishing it does not add the plugin to
 Jellyfin's official repository.
@@ -106,6 +109,21 @@ python3 scripts/package_plugin.py
 Generated files are under the ignored `artifacts/repository/` directory. The
 catalog is generated from `build.yaml` and the exact ZIP being uploaded, so its
 checksum always corresponds to the release asset. Do not hand-edit checksums.
+
+### Unstable compatibility
+
+Version 1.0.1.0 was tested against Jellyfin `master` commit
+`aec42b345e1a7da25ee5492183f12209338df688` (server version 13.0.0).
+The server loaded the plugin as active, accepted authenticated status and
+detection-preview requests, and returned the plugin from its available-package
+catalog using the generated manifest. The existing 23 plugin tests also passed.
+GPU acceleration still depends on the server's drivers and jellyfin-ffmpeg.
+
+The **Jellyfin unstable compatibility** workflow repeats the runtime and catalog
+check on changes to `main`, pull requests, manual runs, and weekly against the
+latest upstream `master`. Future unstable API changes can break compatibility;
+check that workflow before upgrading. The smoke test only configures a fresh,
+isolated test server and must never be run against an existing installation.
 
 ## API
 
