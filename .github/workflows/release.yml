@@ -16,6 +16,7 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -33,6 +34,10 @@ jobs:
         id: version
         shell: bash
         run: |
+          if [[ "$GITHUB_REF_TYPE" != tag && "$GITHUB_REF_NAME" != main ]]; then
+            echo "Manual releases must run from main" >&2
+            exit 1
+          fi
           version=$(python -c 'import yaml; print(yaml.safe_load(open("build.yaml"))["version"])')
           tag="v$version"
           if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "$tag" ]]; then
